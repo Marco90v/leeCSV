@@ -4,8 +4,59 @@
 
 - **Project name:** leeCSV
 - **Language:** Go 1.21+
-- **Purpose:** Search and filter records from large CSV files (30M+ records) containing national ID data
-- **Architecture:** Concurrent processing with goroutines, supports multiple search modes (CSV, Index, SQLite)
+- **Purpose:** Search and filter records from large CSV files (30M+ records) containing national ID data (Venezuelan cedulas)
+- **Architecture:** CLI tool using Cobra framework, supports multiple search modes (CSV, Index, SQLite)
+- **Module:** `go/csv`
+
+## Project Structure
+
+```
+leeCSV/
+├── main.go                 # Entry point
+├── go.mod                  # Module definition
+├── go.sum                  # Dependencies checksums
+├── AGENTS.md               # This file
+├── cmd/                    # CLI commands (Cobra)
+│   ├── root.go            # Root command, config, global flags
+│   ├── search.go          # CSV direct search command
+│   ├── index.go          # Index build/search commands
+│   ├── db.go             # SQLite build/search commands
+│   └── types.go          # CLI-specific types (Config, SearchParams)
+└── internal/               # Core business logic
+    ├── types.go          # Record, SearchCondition, SearchPattern, SearchLogic
+    ├── record.go         # CSV reading and search logic
+    ├── index.go          # In-memory index for fast lookups
+    └── sqlite.go         # SQLite manager with FTS5 support
+```
+
+**Note:** The project uses the standard library `encoding/csv` package, NOT `gocarina/gocsv`.
+
+## Available Skills
+
+The following skills are available for this project. Load them when working on specific tasks:
+
+| Skill | When to Use |
+|-------|-------------|
+| **clean-code** | Refactoring, improving code quality, applying Clean Code principles |
+| **cli-developer** | CLI design, adding subcommands, flags, completions, terminal UI |
+| **golang-cli** | Go CLI development with Cobra/Viper, exit codes, signal handling |
+| **golang-pro** | Concurrency patterns, goroutines, channels, performance optimization |
+| **golang-testing** | Writing tests, benchmarks, fuzzing, TDD workflow |
+| **refactor** | Extracting functions, renaming, breaking down large functions, design patterns |
+| **SQLite Database Expert** | SQLite with FTS5, migrations, security patterns, performance |
+| **context7-mcp** | Looking up library/framework documentation |
+| **csv-data-wrangler** | CSV processing, data cleaning, DuckDB for large files |
+| **csv-excel-merger** | Merging CSV/Excel files, column matching |
+
+### Loading a Skill
+
+When a task matches a skill description, load it using:
+
+```
+Load the [skill-name] skill
+```
+
+This will inject detailed instructions into the context.
 
 ## Build, Lint, and Test Commands
 
@@ -219,37 +270,28 @@ The application supports three search modes:
 3. **SQLite mode:** Full-text search with SQLite FTS5 (best for complex queries)
 
 #### Mode Selection
-Use flags to select the search mode:
+Use subcommands to select the search mode (Cobra framework):
 ```bash
-./leeCSV -mode=csv -csv=/path/to/file.csv -dni=12345678
-./leeCSV -mode=index -index=/path/to/index.json -dni=12345678
-./leeCSV -mode=sqlite -db=/path/to/database.db -dni=12345678
+# Search using CSV mode (loads all in memory)
+leeCSV search --csv=/path/to/file.csv --dni=12345678
+
+# Build and search using index (recommended for 30M+ records)
+leeCSV index build --csv=/path/to/large.csv --index=/path/to/index.json
+leeCSV index search --index=/path/to/index.json --dni=12345678
+
+# Build and search using SQLite (best for complex queries)
+leeCSV db build --csv=/path/to/large.csv --db=/path/to/database.db
+leeCSV db search --db=/path/to/database.db --dni=12345678
 ```
 
 ### Search Patterns
-Support multiple matching patterns per field:
-- **exact:** Exact match (e.g., DNI = "12345678")
-- **contains:** Substring search (e.g., name contains "Juan")
-- **startswith:** Prefix search (e.g., lastname starts with "Gar")
-- **regex:** Regular expression (for advanced users)
+Currently supported matching patterns per field:
+- **exact:** Exact match (e.g., DNI = "12345678") - default
+- **contains:** Substring search (e.g., name contains "Juan") - SQLite only
+- **startswith:** Prefix search (e.g., lastname starts with "Gar") - SQLite only
+- **regex:** Not yet implemented
 
-```bash
-# Examples
-./leeCSV -dni=12345678                          # exact by default
-./leeCSV -primerNombre:contains=Juan           # contains
-./leeCSV -primerApellido:startswith=Gar       # starts with
-./leeCSV -dni:regex=^1[0-9]{7}                 # regex pattern
-```
-
-### Search Logic Options
-Combine multiple search criteria with:
-- **AND:** All conditions must match (default)
-- **OR:** At least one condition must match
-
-```bash
-./leeCSV -logic=AND -dni=12345678 -primerNombre=Juan
-./leeCSV -logic=OR -primerNombre=Juan -primerNombre=Maria
-```
+**Note:** Pattern selection via CLI flags is not yet available. Currently all searches use exact match by default.
 
 ### Index Mode (Recommended for 30M+ records)
 The Index mode is designed for large files:
@@ -258,13 +300,23 @@ The Index mode is designed for large files:
 
 ```bash
 # Build index (one-time operation)
-./leeCSV -mode=index -build -csv=/path/to/large.csv -index=/path/to/index.json
+leeCSV index build --csv=/path/to/large.csv --index=/path/to/index.json
 
 # Use existing index
-./leeCSV -mode=index -index=/path/to/index.json -dni=12345678
+leeCSV index search --index=/path/to/index.json --dni=12345678
 ```
 
 **Index storage:** The index file can be reused since the source CSV doesn't change (it's exported from a database).
+
+### Search Logic Options
+Combine multiple search criteria with:
+- **AND:** All conditions must match (default)
+- **OR:** At least one condition must match
+
+```bash
+leeCSV search --logic=AND --dni=12345678 --primer-nombre=Juan
+leeCSV index search --logic=OR --primer-nombre=Juan --primer-nombre=Maria
+```
 
 ### Memory Management
 **IMPORTANT:** The main goal is to NOT load all 30M records into memory.
@@ -333,8 +385,10 @@ defer cancel()
 
 ## Dependencies
 
-- `github.com/gocarina/gocsv` - CSV parsing
-- `github.com/mattn/go-sqlite3` - SQLite database
+- `github.com/spf13/cobra` - CLI framework (command structure, flags, subcommands)
+- `github.com/mattn/go-sqlite3` - SQLite database driver
+
+**Note:** The project uses Go's standard library `encoding/csv` package, NOT `gocarina/gocsv`.
 
 ---
 
