@@ -25,8 +25,10 @@ leeCSV/
 ## Commands
 ```bash
 # Build & Run
-go build -o leeCSV .    # Build binary
-go run .                # Run
+go build -o leeCSV .           # Build binary
+go build -tags fts5 -o leeCSV . # Build with FTS5 full-text search
+go run .                       # Run
+go run -tags fts5 .             # Run with FTS5
 
 # Development
 go test ./...           # Run all tests
@@ -87,8 +89,8 @@ leeCSV index search --index=index.json --dni=12345678
 
 ### SQLite Mode (best for complex queries)
 ```bash
-# First: build database
-leeCSV db build --csv=data.csv --db=data.db
+# First: build database (use -tags fts5 for full-text search)
+go run -tags fts5 . db build --csv=data.csv --db=data.db
 
 # Then: search
 leeCSV db search --db=data.db --dni=12345678
@@ -173,8 +175,8 @@ func ReadCSV(ctx context.Context, path string) (<-chan Record, error) {
 - Check field names: `--primer-nombre`, not `--primernombre`
 
 ### SQLite FTS not working
-- Falls back to LIKE queries automatically
-- Not all SQLite builds have FTS5
+- Use `-tags fts5` when building: `go build -tags fts5 -o leeCSV .`
+- Falls back to LIKE queries automatically if FTS5 not available
 
 ---
 
