@@ -230,6 +230,57 @@ func worker(ctx context.Context, jobs <-chan Job, results chan<- Result) {
 - Consider memory usage with large files (30M+ records)
 - Profile with `pprof` if needed
 
+### Implementation Best Practices (REQUIRED)
+
+**Always use streaming when processing large files:**
+- NEVER load all records into memory with `ReadFile()` for large CSVs
+- Use streaming readers (`csv.NewReader`) that process records incrementally
+- Build indexes while reading the file, not after loading everything
+
+**Always use goroutines for parallel processing:**
+- Use `go func()` to run tasks in parallel when appropriate
+- Use channels to stream data between goroutines
+- Use `sync.WaitGroup` to coordinate goroutine completion
+- Use `context.Context` for cancellation and graceful shutdown
+
+**Always use case-insensitive search:**
+- Use `strings.EqualFold()` for string comparisons
+- This ensures "JUAN", "Juan", "juan" all match when searching
+
+Example (CORRECT):
+```go
+// Case-insensitive comparison
+if strings.EqualFold(record.DNI, searchDNI) {
+    // match
+}
+
+// Streaming search (CORRECT)
+func SearchCSVStreaming(ctx context.Context, csvPath string, params SearchParams) ([]Record, error) {
+    file, err := os.Open(csvPath)
+    defer file.Close()
+    
+    reader := csv.NewReader(file)
+    for {
+        record, err := reader.Read()
+        if err == io.EOF {
+            break
+        }
+        // process record one at a time
+    }
+}
+```
+
+Example (INCORRECT - DO NOT USE):
+```go
+// Case-sensitive comparison (WRONG)
+if record.DNI == searchDNI {
+    // will miss "12345678" when searching for "01234567"
+}
+
+// Loading all into memory (WRONG for large files)
+records, _ := ReadFileWithContext(ctx, csvPath)  // 30M records = crash
+```
+
 ### Documentation
 
 - Document all exported functions, types, and packages
