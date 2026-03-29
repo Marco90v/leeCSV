@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,20 +165,21 @@ func parseRecord(record []string) Record {
 }
 
 // matchesSearch checks if a record matches the search criteria.
+// Comparison is case-insensitive for text fields.
 func matchesSearch(rec Record, params SearchParams) bool {
-	if params.DNI != "" && rec.DNI != params.DNI {
+	if params.DNI != "" && !strings.EqualFold(rec.DNI, params.DNI) {
 		return false
 	}
-	if params.PrimerNombre != "" && rec.Primer_Nombre != params.PrimerNombre {
+	if params.PrimerNombre != "" && !strings.EqualFold(rec.Primer_Nombre, params.PrimerNombre) {
 		return false
 	}
-	if params.SegundoNombre != "" && rec.Segundo_Nombre != params.SegundoNombre {
+	if params.SegundoNombre != "" && !strings.EqualFold(rec.Segundo_Nombre, params.SegundoNombre) {
 		return false
 	}
-	if params.PrimerApellido != "" && rec.Primer_Apellido != params.PrimerApellido {
+	if params.PrimerApellido != "" && !strings.EqualFold(rec.Primer_Apellido, params.PrimerApellido) {
 		return false
 	}
-	if params.SegundoApellido != "" && rec.Segundo_Apellido != params.SegundoApellido {
+	if params.SegundoApellido != "" && !strings.EqualFold(rec.Segundo_Apellido, params.SegundoApellido) {
 		return false
 	}
 	return true
