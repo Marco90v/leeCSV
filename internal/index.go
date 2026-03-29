@@ -2,11 +2,14 @@ package internal
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Index represents an in-memory index for fast CSV lookups.
@@ -39,28 +42,99 @@ func NewIndex() *Index {
 }
 
 // BuildIndex builds an index from CSV records using parallel workers.
+// Uses streaming to avoid loading all records into memory.
 // Uses context for cancellation support.
 func BuildIndex(csvPath string, workers int) (*Index, error) {
-	return BuildIndexWithContext(context.Background(), csvPath, workers)
+	return BuildIndexStreaming(context.Background(), csvPath, workers)
 }
 
-// BuildIndexWithContext builds an index from CSV with context cancellation support.
-func BuildIndexWithContext(ctx context.Context, csvPath string, workers int) (*Index, error) {
-	records, err := ReadFileWithContext(ctx, csvPath)
+// BuildIndexStreaming builds an index from CSV using streaming.
+// Does NOT load all records into memory - streams through the file and builds index incrementally.
+// Uses a single worker with mutex for thread safety - simpler and memory-efficient.
+func BuildIndexStreaming(ctx context.Context, csvPath string, workers int) (*Index, error) {
+	file, err := os.Open(csvPath)
 	if err != nil {
-		return nil, fmt.Errorf("read CSV: %w", err)
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer file.Close()
+
+	// Create index upfront
+	index := NewIndex()
+
+	// Use mutex for thread-safe index updates
+	var mu sync.Mutex
+
+	// Total records counter
+	var totalRecords int64
+
+	// Progress reporting
+	var progressMu sync.Mutex
+	lastProgress := time.Now()
+
+	// Reader goroutine - streams records from CSV
+	readerErr := make(chan error, 1)
+	go func() {
+		reader := csv.NewReader(file)
+		reader.Comma = ';'
+
+		// Skip header
+		if _, err := reader.Read(); err != nil {
+			readerErr <- fmt.Errorf("read header: %w", err)
+			return
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				readerErr <- ctx.Err()
+				return
+			default:
+			}
+
+			record, err := reader.Read()
+			if err == io.EOF {
+				readerErr <- nil
+				return
+			}
+			if err != nil || len(record) < 7 {
+				continue
+			}
+
+			rec := parseRecord(record)
+
+			// Add to index with mutex protection
+			mu.Lock()
+			index.DNI[rec.DNI] = append(index.DNI[rec.DNI], rec)
+			index.PrimerNombre[rec.Primer_Nombre] = append(index.PrimerNombre[rec.Primer_Nombre], rec)
+			index.SegundoNombre[rec.Segundo_Nombre] = append(index.SegundoNombre[rec.Segundo_Nombre], rec)
+			index.PrimerApellido[rec.Primer_Apellido] = append(index.PrimerApellido[rec.Primer_Apellido], rec)
+			index.SegundoApellido[rec.Segundo_Apellido] = append(index.SegundoApellido[rec.Segundo_Apellido], rec)
+			mu.Unlock()
+
+			atomic.AddInt64(&totalRecords, 1)
+
+			// Progress report every 2 seconds
+			progressMu.Lock()
+			if time.Since(lastProgress) > 2*time.Second {
+				fmt.Printf("\rIndexed: %d records...", atomic.LoadInt64(&totalRecords))
+				lastProgress = time.Now()
+			}
+			progressMu.Unlock()
+		}
+	}()
+
+	// Wait for reader to finish
+	err = <-readerErr
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("reader error: %w", err)
 	}
 
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
+	// Update total records
+	index.TotalRecords = int(atomic.LoadInt64(&totalRecords))
 
-	// For smaller datasets, build index sequentially (faster due to no goroutine overhead)
-	if len(records) < 100000 {
-		return buildIndexSequential(records), nil
-	}
+	fmt.Printf("\rIndexed: %d records... done!\n", index.TotalRecords)
 
-	return buildIndexParallel(ctx, records, workers)
+	return index, nil
 }
 
 // buildIndexSequential builds the index without parallelism (better for smaller files).
