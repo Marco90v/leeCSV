@@ -46,6 +46,10 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Data files (CSV, etc.)
+nacional.csv
+*.csv
+
 # Index files (generated at runtime)
 *.json (generated)
 index.json
