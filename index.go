@@ -369,3 +369,95 @@ func matchPattern(value, term string, pattern SearchPattern) bool {
 	}
 	return false
 }
+
+// SearchCondition represents a single search condition.
+type SearchCondition struct {
+	Field   string
+	Value   string
+	Pattern SearchPattern
+}
+
+// SearchLogic defines how multiple conditions are combined.
+type SearchLogic string
+
+const (
+	LogicAND SearchLogic = "AND"
+	LogicOR  SearchLogic = "OR"
+)
+
+// SearchAll combines multiple field searches with AND/OR logic.
+func (idx *Index) SearchAll(conditions []SearchCondition, logic SearchLogic) []Record {
+	if len(conditions) == 0 {
+		return nil
+	}
+
+	// Get initial results from first condition
+	results := idx.searchByCondition(conditions[0])
+
+	// Apply remaining conditions
+	for i := 1; i < len(conditions); i++ {
+		more := idx.searchByCondition(conditions[i])
+
+		if logic == LogicAND {
+			results = intersectRecords(results, more)
+		} else {
+			results = unionRecords(results, more)
+		}
+	}
+
+	return results
+}
+
+// searchByCondition searches by a single condition.
+func (idx *Index) searchByCondition(cond SearchCondition) []Record {
+	switch cond.Field {
+	case "dni":
+		return idx.SearchByDNIWithPattern(cond.Value, cond.Pattern)
+	case "primer_nombre", "primernombre":
+		return idx.SearchByFieldWithPattern("primerNombre", cond.Value, cond.Pattern)
+	case "segundo_nombre", "segundonombre":
+		return idx.SearchByFieldWithPattern("segundoNombre", cond.Value, cond.Pattern)
+	case "primer_apellido", "primerapellido":
+		return idx.SearchByFieldWithPattern("primerApellido", cond.Value, cond.Pattern)
+	case "segundo_apellido", "segundoapellido":
+		return idx.SearchByFieldWithPattern("segundoApellido", cond.Value, cond.Pattern)
+	default:
+		return nil
+	}
+}
+
+// intersectRecords returns records that exist in both slices.
+func intersectRecords(a, b []Record) []Record {
+	seen := make(map[string]bool)
+	for _, r := range a {
+		seen[r.DNI] = true
+	}
+
+	var result []Record
+	for _, r := range b {
+		if seen[r.DNI] {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+// unionRecords returns all unique records from both slices.
+func unionRecords(a, b []Record) []Record {
+	seen := make(map[string]bool)
+	var result []Record
+
+	for _, r := range a {
+		if !seen[r.DNI] {
+			seen[r.DNI] = true
+			result = append(result, r)
+		}
+	}
+	for _, r := range b {
+		if !seen[r.DNI] {
+			seen[r.DNI] = true
+			result = append(result, r)
+		}
+	}
+	return result
+}

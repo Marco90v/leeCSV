@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -24,7 +25,9 @@ type Config struct {
 	IndexPath  string
 	DBPath     string
 	BuildIndex bool
+	BuildDB    bool
 	Workers    int
+	Logic      SearchLogic
 
 	// Search parameters with pattern support
 	DNI                    string
@@ -54,6 +57,8 @@ func init() {
 	flag.StringVar(&config.SegundoNombre, "segundoNombre", "", "Search by second name")
 	flag.StringVar(&config.PrimerApellido, "primerApellido", "", "Search by first last name")
 	flag.StringVar(&config.SegundoApellido, "segundoApellido", "", "Search by second last name")
+	flag.BoolVar(&config.BuildDB, "build-db", false, "Build SQLite database from CSV (sqlite mode only)")
+	flag.StringVar((*string)(&config.Logic), "logic", "AND", "Search logic: AND, OR")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -63,6 +68,8 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  %s -mode=csv -csv=data.csv -dni=12345678\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -mode=index -build -csv=data.csv -index=idx.json\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -mode=index -index=idx.json -dni=12345678\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -mode=sqlite -build-db -csv=data.csv -db=data.db\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -mode=sqlite -db=data.db -dni=12345678\n", os.Args[0])
 	}
 }
 
@@ -81,8 +88,7 @@ func main() {
 	case ModeIndex:
 		runIndexMode()
 	case ModeSQLite:
-		fmt.Println("SQLite mode not yet implemented")
-		os.Exit(1)
+		runSQLiteMode()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown mode: %s\n", config.Mode)
 		os.Exit(1)
@@ -142,12 +148,15 @@ func runIndexMode() {
 
 // searchIndex searches using the in-memory index.
 func searchIndex(idx *Index) []Record {
+	// Collect all conditions for AND/OR logic
+	var conditions []SearchCondition
+
 	if config.DNI != "" {
 		pattern := config.DNIPattern
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		return idx.SearchByDNIWithPattern(config.DNI, pattern)
+		conditions = append(conditions, SearchCondition{Field: "dni", Value: config.DNI, Pattern: pattern})
 	}
 
 	if config.PrimerNombre != "" {
@@ -155,7 +164,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		return idx.SearchByFieldWithPattern("primerNombre", config.PrimerNombre, pattern)
+		conditions = append(conditions, SearchCondition{Field: "primer_nombre", Value: config.PrimerNombre, Pattern: pattern})
 	}
 
 	if config.SegundoNombre != "" {
@@ -163,7 +172,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		return idx.SearchByFieldWithPattern("segundoNombre", config.SegundoNombre, pattern)
+		conditions = append(conditions, SearchCondition{Field: "segundo_nombre", Value: config.SegundoNombre, Pattern: pattern})
 	}
 
 	if config.PrimerApellido != "" {
@@ -171,7 +180,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		return idx.SearchByFieldWithPattern("primerApellido", config.PrimerApellido, pattern)
+		conditions = append(conditions, SearchCondition{Field: "primer_apellido", Value: config.PrimerApellido, Pattern: pattern})
 	}
 
 	if config.SegundoApellido != "" {
@@ -179,10 +188,94 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		return idx.SearchByFieldWithPattern("segundoApellido", config.SegundoApellido, pattern)
+		conditions = append(conditions, SearchCondition{Field: "segundo_apellido", Value: config.SegundoApellido, Pattern: pattern})
 	}
 
-	return nil
+	// Use index.SearchAll with AND/OR logic
+	return idx.SearchAll(conditions, config.Logic)
+}
+
+// runSQLiteMode handles SQLite build or search.
+func runSQLiteMode() {
+	db, err := NewSQLiteManager(config.DBPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if config.BuildDB {
+		fmt.Printf("Building SQLite database from: %s\n", config.CSVPath)
+		fmt.Printf("Workers: %d\n", config.Workers)
+
+		if err := db.BuildDBFromCSV(context.Background(), config.CSVPath, config.Workers); err != nil {
+			fmt.Fprintf(os.Stderr, "Error building database: %v\n", err)
+			os.Exit(1)
+		}
+
+		count, _ := db.GetRecordCount()
+		fmt.Printf("Database built: %d records\n", count)
+		fmt.Printf("Database saved to: %s\n", config.DBPath)
+		return
+	}
+
+	// Search mode
+	results := searchSQLite(db)
+	printResults(results)
+}
+
+// searchSQLite searches using SQLite.
+func searchSQLite(db *SQLiteManager) []Record {
+	// Collect all conditions for AND/OR logic
+	var conditions []SearchCondition
+
+	if config.DNI != "" {
+		pattern := config.DNIPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		conditions = append(conditions, SearchCondition{Field: "dni", Value: config.DNI, Pattern: pattern})
+	}
+
+	if config.PrimerNombre != "" {
+		pattern := config.PrimerNombrePattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		conditions = append(conditions, SearchCondition{Field: "primer_nombre", Value: config.PrimerNombre, Pattern: pattern})
+	}
+
+	if config.SegundoNombre != "" {
+		pattern := config.SegundoNombrePattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		conditions = append(conditions, SearchCondition{Field: "segundo_nombre", Value: config.SegundoNombre, Pattern: pattern})
+	}
+
+	if config.PrimerApellido != "" {
+		pattern := config.PrimerApellidoPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		conditions = append(conditions, SearchCondition{Field: "primer_apellido", Value: config.PrimerApellido, Pattern: pattern})
+	}
+
+	if config.SegundoApellido != "" {
+		pattern := config.SegundoApellidoPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		conditions = append(conditions, SearchCondition{Field: "segundo_apellido", Value: config.SegundoApellido, Pattern: pattern})
+	}
+
+	// Use db.SearchAll with AND/OR logic
+	results, err := db.SearchAll(conditions, config.Logic)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Search error: %v\n", err)
+		os.Exit(1)
+	}
+	return results
 }
 
 // parseSearchFlag parses a flag value with pattern suffix like "value:contains" or "value:startswith".
