@@ -7,20 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
-	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// SQLiteConfig holds SQLite-specific configuration.
-type SQLiteConfig struct {
-	DBPath     string
-	BuildDB    bool
-	Workers    int
-	BatchSize  int
-	FTSEnabled bool
-}
+// SQLite configuration constants
+const (
+	DefaultBatchSize   = 1000
+	WorkersBatchFactor = 100
+	BusyTimeoutMs      = 30000
+)
 
 // SQLiteManager handles SQLite operations.
 type SQLiteManager struct {
@@ -47,15 +43,16 @@ func (sm *SQLiteManager) Close() error {
 }
 
 // BuildDBFromCSV imports CSV data into SQLite with FTS5.
+// Uses single writer with batch processing for SQLite stability.
 func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, workers int) error {
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-
 	// Create tables
 	if err := sm.createTables(); err != nil {
 		return fmt.Errorf("create tables: %w", err)
 	}
+
+	// Enable WAL mode for better concurrent read performance
+	_, _ = sm.db.Exec("PRAGMA journal_mode=WAL")
+	_, _ = sm.db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", BusyTimeoutMs))
 
 	// Open CSV file
 	file, err := os.Open(csvPath)
@@ -82,68 +79,78 @@ func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, wor
 	}
 	defer stmt.Close()
 
-	// Batch insert with workers
-	recordCh := make(chan []string, workers*2)
-	errCh := make(chan error, 1)
-	doneCh := make(chan struct{})
-
-	// Start workers
-	for w := 0; w < workers; w++ {
-		go func() {
-			for record := range recordCh {
-				if len(record) < 7 {
-					continue
-				}
-				_, err := stmt.Exec(
-					record[0], // Nacionalidad
-					record[1], // DNI
-					record[2], // Primer_Apellido
-					record[3], // Segundo_Apellido
-					record[4], // Primer_Nombre
-					record[5], // Segundo_Nombre
-					record[6], // Cod_Centro
-				)
-				if err == nil {
-					// Note: atomic increment would be better for high concurrency
-				}
-			}
-		}()
+	// Batch processing with single writer (SQLite requirement)
+	batchSize := DefaultBatchSize
+	if workers > 0 {
+		batchSize = workers * WorkersBatchFactor
 	}
+	batch := make([][]string, 0, batchSize)
+	count := 0
 
-	// Feed records
-	go func() {
-		defer close(recordCh)
-		for {
-			select {
-			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-			default:
-			}
-
-			record, err := reader.Read()
-			if err == io.EOF {
-				doneCh <- struct{}{}
-				return
-			}
-			if err != nil {
-				errCh <- fmt.Errorf("read CSV: %w", err)
-				return
-			}
-			recordCh <- record
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
-	}()
 
-	// Wait for completion
-	select {
-	case err := <-errCh:
-		return err
-	case <-doneCh:
+		record, err := reader.Read()
+		if err == io.EOF {
+			// Flush remaining batch
+			if len(batch) > 0 {
+				if err := sm.flushBatch(stmt, batch); err != nil {
+					return err
+				}
+			}
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read CSV: %w", err)
+		}
+
+		// Skip invalid records
+		if len(record) < 7 {
+			continue
+		}
+
+		batch = append(batch, record)
+		count++
+
+		// Flush when batch is full
+		if len(batch) >= batchSize {
+			if err := sm.flushBatch(stmt, batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
+		}
 	}
 
 	// Build FTS index (optional - continue if not available)
 	_ = sm.buildFTSIndex()
 
+	return nil
+}
+
+// flushBatch inserts a batch of records in a single transaction.
+func (sm *SQLiteManager) flushBatch(stmt *sql.Stmt, batch [][]string) error {
+	tx, err := sm.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	for _, record := range batch {
+		if _, err := tx.Stmt(stmt).Exec(
+			record[0], record[1], record[2], record[3],
+			record[4], record[5], record[6],
+		); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert record: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
 	return nil
 }
 
@@ -263,23 +270,6 @@ func (sm *SQLiteManager) SearchByField(field, value string, pattern SearchPatter
 	return sm.scanRecords(rows)
 }
 
-// SearchFTS performs a full-text search using FTS5.
-func (sm *SQLiteManager) SearchFTS(query string) ([]Record, error) {
-	rows, err := sm.db.Query(`
-		SELECT r.nacionalidad, r.dni, r.primer_apellido, r.segundo_apellido,
-			   r.primer_nombre, r.segundo_nombre, r.cod_centro
-		FROM records r
-		JOIN records_fts f ON r.id = f.rowid
-		WHERE records_fts MATCH ?
-	`, query)
-	if err != nil {
-		return nil, fmt.Errorf("FTS query: %w", err)
-	}
-	defer rows.Close()
-
-	return sm.scanRecords(rows)
-}
-
 // searchAll combines multiple field searches with AND/OR logic.
 func (sm *SQLiteManager) SearchAll(conditions []SearchCondition, logic SearchLogic) ([]Record, error) {
 	if len(conditions) == 0 {
@@ -344,26 +334,4 @@ func (sm *SQLiteManager) GetRecordCount() (int, error) {
 	var count int
 	err := sm.db.QueryRow("SELECT COUNT(*) FROM records").Scan(&count)
 	return count, err
-}
-
-// fieldToColumn maps field names to database column names.
-func fieldToColumn(field string) string {
-	switch strings.ToLower(field) {
-	case "dni", "cedula":
-		return "dni"
-	case "primernombre", "primer_nombre", "firstname":
-		return "primer_nombre"
-	case "segundonombre", "segundo_nombre", "secondname":
-		return "segundo_nombre"
-	case "primerapellido", "primer_apellido", "firstlastname":
-		return "primer_apellido"
-	case "segundoapellido", "segundo_apellido", "secondlastname":
-		return "segundo_apellido"
-	case "nacionalidad":
-		return "nacionalidad"
-	case "codcentro", "cod_centro", "centro":
-		return "cod_centro"
-	default:
-		return field
-	}
 }

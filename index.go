@@ -12,6 +12,11 @@ import (
 	"sync"
 )
 
+// SearchEngine defines the interface for all search implementations.
+type SearchEngine interface {
+	SearchAll(conditions []SearchCondition, logic SearchLogic) ([]Record, error)
+}
+
 // SearchPattern defines how a search term should be matched.
 type SearchPattern string
 
@@ -37,8 +42,8 @@ type Index struct {
 	// Metadata
 	TotalRecords int `json:"total_records"`
 
-	// Mutex for thread-safe operations
-	mu sync.RWMutex
+	// Mutex for thread-safe operations (not serialized)
+	mu sync.RWMutex `json:"-"`
 }
 
 // NewIndex creates a new Index structure.

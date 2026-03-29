@@ -5,8 +5,29 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
-	"strings"
+)
+
+// Default configuration constants
+const (
+	DefaultCSVPath   = "./nacional.csv"
+	DefaultIndexPath = "./index.json"
+	DefaultDBPath    = "./data.db"
+	DefaultWorkers   = 0 // 0 = auto-detect
+	DefaultLogic     = "AND"
+	DefaultMode      = "csv"
+)
+
+// Field names for search (used consistently across modes)
+const (
+	FieldDNI             = "dni"
+	FieldPrimerNombre    = "primer_nombre"
+	FieldSegundoNombre   = "segundo_nombre"
+	FieldPrimerApellido  = "primer_apellido"
+	FieldSegundoApellido = "segundo_apellido"
+	FieldNacionalidad    = "nacionalidad"
+	FieldCodCentro       = "cod_centro"
 )
 
 // SearchMode defines the operating mode of the application.
@@ -45,10 +66,10 @@ type Config struct {
 var config Config
 
 func init() {
-	flag.StringVar(&config.CSVPath, "csv", "./nacional.csv", "Path to CSV file")
-	flag.StringVar(&config.IndexPath, "index", "./index.json", "Path to index file")
-	flag.StringVar(&config.DBPath, "db", "./data.db", "Path to SQLite database")
-	flag.StringVar((*string)(&config.Mode), "mode", "csv", "Search mode: csv, index, sqlite")
+	flag.StringVar(&config.CSVPath, "csv", DefaultCSVPath, "Path to CSV file")
+	flag.StringVar(&config.IndexPath, "index", DefaultIndexPath, "Path to index file")
+	flag.StringVar(&config.DBPath, "db", DefaultDBPath, "Path to SQLite database")
+	flag.StringVar((*string)(&config.Mode), "mode", DefaultMode, "Search mode: csv, index, sqlite")
 	flag.BoolVar(&config.BuildIndex, "build", false, "Build index from CSV (index mode only)")
 	flag.IntVar(&config.Workers, "workers", 0, "Number of workers (0 = auto)")
 
@@ -58,7 +79,7 @@ func init() {
 	flag.StringVar(&config.PrimerApellido, "primerApellido", "", "Search by first last name")
 	flag.StringVar(&config.SegundoApellido, "segundoApellido", "", "Search by second last name")
 	flag.BoolVar(&config.BuildDB, "build-db", false, "Build SQLite database from CSV (sqlite mode only)")
-	flag.StringVar((*string)(&config.Logic), "logic", "AND", "Search logic: AND, OR")
+	flag.StringVar((*string)(&config.Logic), "logic", DefaultLogic, "Search logic: AND, OR")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -75,6 +96,13 @@ func init() {
 
 func main() {
 	flag.Parse()
+
+	// Validate input
+	if err := validateConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	if config.Workers <= 0 {
 		config.Workers = runtime.NumCPU()
@@ -146,9 +174,8 @@ func runIndexMode() {
 	printResults(results)
 }
 
-// searchIndex searches using the in-memory index.
-func searchIndex(idx *Index) []Record {
-	// Collect all conditions for AND/OR logic
+// collectConditions gathers all search conditions from config.
+func collectConditions() []SearchCondition {
 	var conditions []SearchCondition
 
 	if config.DNI != "" {
@@ -156,7 +183,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		conditions = append(conditions, SearchCondition{Field: "dni", Value: config.DNI, Pattern: pattern})
+		conditions = append(conditions, SearchCondition{Field: FieldDNI, Value: config.DNI, Pattern: pattern})
 	}
 
 	if config.PrimerNombre != "" {
@@ -164,7 +191,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		conditions = append(conditions, SearchCondition{Field: "primer_nombre", Value: config.PrimerNombre, Pattern: pattern})
+		conditions = append(conditions, SearchCondition{Field: FieldPrimerNombre, Value: config.PrimerNombre, Pattern: pattern})
 	}
 
 	if config.SegundoNombre != "" {
@@ -172,7 +199,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		conditions = append(conditions, SearchCondition{Field: "segundo_nombre", Value: config.SegundoNombre, Pattern: pattern})
+		conditions = append(conditions, SearchCondition{Field: FieldSegundoNombre, Value: config.SegundoNombre, Pattern: pattern})
 	}
 
 	if config.PrimerApellido != "" {
@@ -180,7 +207,7 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		conditions = append(conditions, SearchCondition{Field: "primer_apellido", Value: config.PrimerApellido, Pattern: pattern})
+		conditions = append(conditions, SearchCondition{Field: FieldPrimerApellido, Value: config.PrimerApellido, Pattern: pattern})
 	}
 
 	if config.SegundoApellido != "" {
@@ -188,10 +215,15 @@ func searchIndex(idx *Index) []Record {
 		if pattern == "" {
 			pattern = PatternExact
 		}
-		conditions = append(conditions, SearchCondition{Field: "segundo_apellido", Value: config.SegundoApellido, Pattern: pattern})
+		conditions = append(conditions, SearchCondition{Field: FieldSegundoApellido, Value: config.SegundoApellido, Pattern: pattern})
 	}
 
-	// Use index.SearchAll with AND/OR logic
+	return conditions
+}
+
+// searchIndex searches using the in-memory index.
+func searchIndex(idx *Index) []Record {
+	conditions := collectConditions()
 	return idx.SearchAll(conditions, config.Logic)
 }
 
@@ -226,78 +258,13 @@ func runSQLiteMode() {
 
 // searchSQLite searches using SQLite.
 func searchSQLite(db *SQLiteManager) []Record {
-	// Collect all conditions for AND/OR logic
-	var conditions []SearchCondition
-
-	if config.DNI != "" {
-		pattern := config.DNIPattern
-		if pattern == "" {
-			pattern = PatternExact
-		}
-		conditions = append(conditions, SearchCondition{Field: "dni", Value: config.DNI, Pattern: pattern})
-	}
-
-	if config.PrimerNombre != "" {
-		pattern := config.PrimerNombrePattern
-		if pattern == "" {
-			pattern = PatternExact
-		}
-		conditions = append(conditions, SearchCondition{Field: "primer_nombre", Value: config.PrimerNombre, Pattern: pattern})
-	}
-
-	if config.SegundoNombre != "" {
-		pattern := config.SegundoNombrePattern
-		if pattern == "" {
-			pattern = PatternExact
-		}
-		conditions = append(conditions, SearchCondition{Field: "segundo_nombre", Value: config.SegundoNombre, Pattern: pattern})
-	}
-
-	if config.PrimerApellido != "" {
-		pattern := config.PrimerApellidoPattern
-		if pattern == "" {
-			pattern = PatternExact
-		}
-		conditions = append(conditions, SearchCondition{Field: "primer_apellido", Value: config.PrimerApellido, Pattern: pattern})
-	}
-
-	if config.SegundoApellido != "" {
-		pattern := config.SegundoApellidoPattern
-		if pattern == "" {
-			pattern = PatternExact
-		}
-		conditions = append(conditions, SearchCondition{Field: "segundo_apellido", Value: config.SegundoApellido, Pattern: pattern})
-	}
-
-	// Use db.SearchAll with AND/OR logic
+	conditions := collectConditions()
 	results, err := db.SearchAll(conditions, config.Logic)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Search error: %v\n", err)
 		os.Exit(1)
 	}
 	return results
-}
-
-// parseSearchFlag parses a flag value with pattern suffix like "value:contains" or "value:startswith".
-// Returns the value and the pattern.
-func parseSearchFlag(flagVal string) (value string, pattern SearchPattern) {
-	if flagVal == "" {
-		return "", ""
-	}
-
-	// Check for pattern suffix: "value:pattern"
-	if idx := strings.LastIndex(flagVal, ":"); idx > 0 {
-		prefix := flagVal[:idx]
-		suffix := flagVal[idx+1:]
-
-		// Check if suffix is a valid pattern
-		switch SearchPattern(suffix) {
-		case PatternExact, PatternContains, PatternStartsWith, PatternRegex:
-			return prefix, SearchPattern(suffix)
-		}
-	}
-
-	return flagVal, PatternExact
 }
 
 // printResults outputs search results.
@@ -312,4 +279,76 @@ func printResults(results []Record) {
 			r.Segundo_Apellido,
 		)
 	}
+}
+
+// validateConfig validates the CLI configuration.
+func validateConfig() error {
+	// Validate mode
+	switch config.Mode {
+	case ModeCSV, ModeIndex, ModeSQLite:
+		// valid
+	default:
+		return fmt.Errorf("invalid mode: %s (valid: csv, index, sqlite)", config.Mode)
+	}
+
+	// Validate logic
+	switch config.Logic {
+	case LogicAND, LogicOR:
+		// valid
+	default:
+		return fmt.Errorf("invalid logic: %s (valid: AND, OR)", config.Logic)
+	}
+
+	// Check if any search criteria or build flags are provided
+	hasSearchParams := config.DNI != "" || config.PrimerNombre != "" ||
+		config.SegundoNombre != "" || config.PrimerApellido != "" || config.SegundoApellido != ""
+	hasBuildFlag := config.BuildIndex || config.BuildDB
+
+	if !hasSearchParams && !hasBuildFlag {
+		return fmt.Errorf("no search criteria or build flag provided")
+	}
+
+	// Validate paths based on mode and build flag
+	if config.BuildIndex {
+		if !fileExists(config.CSVPath) {
+			return fmt.Errorf("CSV file not found: %s", config.CSVPath)
+		}
+	}
+
+	if config.BuildDB {
+		if !fileExists(config.CSVPath) {
+			return fmt.Errorf("CSV file not found: %s", config.CSVPath)
+		}
+	}
+
+	if config.Mode == ModeIndex && !config.BuildIndex {
+		if !fileExists(config.IndexPath) {
+			return fmt.Errorf("index file not found: %s", config.IndexPath)
+		}
+	}
+
+	if config.Mode == ModeSQLite && !config.BuildDB {
+		if !fileExists(config.DBPath) {
+			return fmt.Errorf("database file not found: %s", config.DBPath)
+		}
+	}
+
+	return nil
+}
+
+// fileExists checks if a file exists and is not a directory.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// Abs resolves path to absolute form.
+func abs(path string) string {
+	if absPath, err := filepath.Abs(path); err == nil {
+		return absPath
+	}
+	return path
 }

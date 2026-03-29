@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"sync"
 )
 
@@ -119,31 +118,21 @@ func readRecords(records *csv.Reader, jobs chan<- []string, errCh chan<- error) 
 
 // matchesSearch checks if a record matches the search criteria.
 func matchesSearch(rec Record) bool {
-	values := reflect.ValueOf(rec)
-
-	for i := 0; i < values.NumField(); i++ {
-		fieldName := values.Type().Field(i).Name
-
-		// Get the corresponding search param
-		var searchVal string
-		switch fieldName {
-		case "DNI":
-			searchVal = config.DNI
-		case "Primer_Nombre":
-			searchVal = config.PrimerNombre
-		case "Segundo_Nombre":
-			searchVal = config.SegundoNombre
-		case "Primer_Apellido":
-			searchVal = config.PrimerApellido
-		case "Segundo_Apellido":
-			searchVal = config.SegundoApellido
-		default:
-			continue
-		}
-
-		if searchVal != "" && values.Field(i).String() != searchVal {
-			return false
-		}
+	// Direct field access is much faster than reflection
+	if config.DNI != "" && rec.DNI != config.DNI {
+		return false
+	}
+	if config.PrimerNombre != "" && rec.Primer_Nombre != config.PrimerNombre {
+		return false
+	}
+	if config.SegundoNombre != "" && rec.Segundo_Nombre != config.SegundoNombre {
+		return false
+	}
+	if config.PrimerApellido != "" && rec.Primer_Apellido != config.PrimerApellido {
+		return false
+	}
+	if config.SegundoApellido != "" && rec.Segundo_Apellido != config.SegundoApellido {
+		return false
 	}
 	return true
 }
