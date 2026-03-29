@@ -1,0 +1,63 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+leeCSV
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+/bin/
+/dist/
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Database files (generated at runtime)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Index files (generated at runtime)
+*.json (generated)
+index.json
+
+# Agent / AI tool files
+.agents/
+opencode.json
+skills-lock.json
+.cursorrules
+.cursor/
+.copilot/
+
+# Temporary files
+tmp/
+temp/
