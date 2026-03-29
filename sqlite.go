@@ -141,10 +141,8 @@ func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, wor
 	case <-doneCh:
 	}
 
-	// Build FTS index
-	if err := sm.buildFTSIndex(); err != nil {
-		return fmt.Errorf("build FTS index: %w", err)
-	}
+	// Build FTS index (optional - continue if not available)
+	_ = sm.buildFTSIndex()
 
 	return nil
 }
@@ -174,8 +172,8 @@ func (sm *SQLiteManager) createTables() error {
 		return fmt.Errorf("create DNI index: %w", err)
 	}
 
-	// FTS5 virtual table for full-text search
-	_, err = sm.db.Exec(`
+	// Try to create FTS5 table - continue if not available
+	_, _ = sm.db.Exec(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
 			dni,
 			primer_nombre,
@@ -186,9 +184,6 @@ func (sm *SQLiteManager) createTables() error {
 			content_rowid='id'
 		)
 	`)
-	if err != nil {
-		return fmt.Errorf("create FTS table: %w", err)
-	}
 
 	return nil
 }
