@@ -1,226 +1,222 @@
-// main3.go
 package main
 
 import (
-	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"reflect"
-	"sync"
+	"runtime"
+	"strings"
 )
 
-// nacionalidad;cedula;primer_apellido;segundo_apellido;primer_nombre;segundo_nombre;cod_centro
-type Record struct {
-	Nacionalidad     string
-	DNI              string
-	Primer_Apellido  string
-	Segundo_Apellido string
-	Primer_Nombre    string
-	Segundo_Nombre   string
-	Cod_Centro       string
+// SearchMode defines the operating mode of the application.
+type SearchMode string
+
+const (
+	ModeCSV    SearchMode = "csv"
+	ModeIndex  SearchMode = "index"
+	ModeSQLite SearchMode = "sqlite"
+)
+
+// Config holds all CLI configuration.
+type Config struct {
+	Mode       SearchMode
+	CSVPath    string
+	IndexPath  string
+	DBPath     string
+	BuildIndex bool
+	Workers    int
+
+	// Search parameters with pattern support
+	DNI                    string
+	DNIPattern             SearchPattern
+	PrimerNombre           string
+	PrimerNombrePattern    SearchPattern
+	SegundoNombre          string
+	SegundoNombrePattern   SearchPattern
+	PrimerApellido         string
+	PrimerApellidoPattern  SearchPattern
+	SegundoApellido        string
+	SegundoApellidoPattern SearchPattern
 }
 
-// const CSV string = "/home/i320/Documentos/nacional.csv"
-const CSV string = "./nacional.csv"
+var config Config
 
-var varParams = Record{
-	DNI:              "",
-	Primer_Nombre:    "",
-	Segundo_Nombre:   "",
-	Primer_Apellido:  "",
-	Segundo_Apellido: "",
-}
+func init() {
+	flag.StringVar(&config.CSVPath, "csv", "./nacional.csv", "Path to CSV file")
+	flag.StringVar(&config.IndexPath, "index", "./index.json", "Path to index file")
+	flag.StringVar(&config.DBPath, "db", "./data.db", "Path to SQLite database")
+	flag.StringVar((*string)(&config.Mode), "mode", "csv", "Search mode: csv, index, sqlite")
+	flag.BoolVar(&config.BuildIndex, "build", false, "Build index from CSV (index mode only)")
+	flag.IntVar(&config.Workers, "workers", 0, "Number of workers (0 = auto)")
 
-func getParams() {
-	tempDNI := flag.String("DNI", "", "Documento de identidad")
-	tempPrimerNombre := flag.String("primerNombre", "", "Primer Nombre")
-	tempSegundoNombre := flag.String("segundoNombre", "", "Segungo Nombre")
-	tempPrimerApellido := flag.String("primerApellido", "", "Primer Apellido")
-	tempSegundoApellido := flag.String("segundoApellido", "", "Segundo Apellido")
+	flag.StringVar(&config.DNI, "dni", "", "Search by DNI (exact match)")
+	flag.StringVar(&config.PrimerNombre, "primerNombre", "", "Search by first name")
+	flag.StringVar(&config.SegundoNombre, "segundoNombre", "", "Search by second name")
+	flag.StringVar(&config.PrimerApellido, "primerApellido", "", "Search by first last name")
+	flag.StringVar(&config.SegundoApellido, "segundoApellido", "", "Search by second last name")
 
-	flag.Parse()
-	varParams.DNI = *tempDNI
-	varParams.Primer_Nombre = *tempPrimerNombre
-	varParams.Segundo_Nombre = *tempSegundoNombre
-	varParams.Primer_Apellido = *tempPrimerApellido
-	varParams.Segundo_Apellido = *tempSegundoApellido
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s -mode=csv -csv=data.csv -dni=12345678\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -mode=index -build -csv=data.csv -index=idx.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -mode=index -index=idx.json -dni=12345678\n", os.Args[0])
+	}
 }
 
 func main() {
-	fmt.Println("Iniciando busqueda")
-	getParams()
-	nmWp := 4
+	flag.Parse()
 
-	input := make(chan []string, nmWp)
-	output := make(chan string)
-	var wg sync.WaitGroup
-
-	records, err := readFile(CSV)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	worker := func(jobs <-chan []string, results chan<- string) {
-		for {
-			select {
-			case job, ok := <-jobs: // you must check for readable state of the channel.
-				if !ok {
-					return
-				}
-				user := parseStruct(job)
-
-				//menos esficiente
-				//*************************************
-				// o1 := make(chan string)
-				// o2 := make(chan string)
-				// o3 := make(chan string)
-				// o4 := make(chan string)
-				// o5 := make(chan string)
-
-				// go hiloValDNI(user, user, o1)
-				// go hiloValPrimerNombre(user, user, o2)
-				// go hiloValSegundoNombre(user, user, o3)
-				// go hiloValPrimerApellido(user, user, o4)
-				// go hiloValSegundoApellido(user, user, o5)
-
-				// var h Record
-				// h.DNI = <-o1
-				// h.Primer_Nombre = <-o2
-				// h.Segundo_Nombre = <-o3
-				// h.Primer_Apellido = <-o4
-				// h.Segundo_Apellido = <-o5
-
-				// // fmt.Println(h)
-
-				// var yes bool = true
-				// values := reflect.ValueOf(h)
-				// for i := 0; i < values.NumField(); i++ {
-				// 	if (values.Field(i).String() == "nil"){
-				// 		yes = false
-				// 	}
-				// }
-				// if yes{
-				// 	var cadena = fmt.Sprintf("%s - %s %s, %s %s",
-				// 		h.DNI,
-				// 		h.Primer_Nombre,
-				// 		h.Segundo_Nombre,
-				// 		h.Primer_Apellido,
-				// 		h.Segundo_Apellido,
-				// 	)
-				// 	results <-cadena
-				// }
-				//**************************************
-
-				//Mas esficiente
-				//******************
-				yes := true
-				values := reflect.ValueOf(*user)
-				values2 := reflect.ValueOf(varParams)
-				for i := 1; i <= values.NumField()-2; i++ {
-					if values2.Field(i).String() != "" && values.Field(i).String() != values2.Field(i).String() {
-						yes = false
-						break
-					}
-				}
-				if yes {
-					var cadena = fmt.Sprintf("%s - %s %s, %s %s",
-						user.DNI,
-						user.Primer_Nombre,
-						user.Segundo_Nombre,
-						user.Primer_Apellido,
-						user.Segundo_Apellido,
-					)
-					results <- cadena
-				}
-				//*********************
-
-			}
-		}
+	if config.Workers <= 0 {
+		config.Workers = runtime.NumCPU()
 	}
 
-	for w := 0; w < nmWp; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			worker(input, output)
-		}()
-	}
+	fmt.Printf("leeCSV - Search Mode: %s\n", config.Mode)
 
-	errCh := make(chan error, 1)
-	go readRecords(records, input, errCh)
-	go closeResult(&wg, output)
-
-	// Check for read errors
-	select {
-	case err := <-errCh:
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	switch config.Mode {
+	case ModeCSV:
+		runCSVMode()
+	case ModeIndex:
+		runIndexMode()
+	case ModeSQLite:
+		fmt.Println("SQLite mode not yet implemented")
 		os.Exit(1)
 	default:
-	}
-
-	for user := range output {
-		println(user)
-	}
-	fmt.Println("Finalizando busqueda")
-
-}
-
-// readRecords reads all records from the CSV and sends them to the jobs channel.
-// It closes the jobs channel when done or on error.
-func readRecords(records *csv.Reader, jobs chan<- []string, errCh chan<- error) {
-	defer close(jobs)
-
-	for {
-		record, err := records.Read()
-		if err == io.EOF {
-			return
-		}
-		if err != nil {
-			errCh <- fmt.Errorf("error reading CSV record: %w", err)
-			return
-		}
-		jobs <- record
+		fmt.Fprintf(os.Stderr, "Unknown mode: %s\n", config.Mode)
+		os.Exit(1)
 	}
 }
 
-// func closeResult(wg *sync.WaitGroup, result chan *Record) {
-func closeResult(wg *sync.WaitGroup, result chan string) {
-	wg.Wait()
-	close(result)
-}
+// runCSVMode runs the legacy CSV search mode.
+func runCSVMode() {
+	fmt.Println("CSV mode - loading file and searching...")
+	fmt.Printf("Search params: DNI=%s, PrimerNombre=%s, PrimerApellido=%s\n",
+		config.DNI, config.PrimerNombre, config.PrimerApellido)
 
-func parseStruct(record []string) *Record {
-	user := &Record{
-		// Nacionalidad:     record[0],
-		DNI:              record[1],
-		Primer_Nombre:    record[4],
-		Segundo_Nombre:   record[5],
-		Primer_Apellido:  record[2],
-		Segundo_Apellido: record[3],
-		// Cod_Centro:       record[6],
-	}
-	return user
-}
-
-// readFile opens a CSV file and returns a reader configured for semicolon-separated files.
-// It skips the header row. Returns an error if the file cannot be opened or read.
-func readFile(path string) (*csv.Reader, error) {
-	file, err := os.Open(path)
+	records, err := readFile(config.CSVPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open CSV file %s: %w", path, err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
-	r := csv.NewReader(file)
-	r.Comma = ';'
-	r.Comment = '#'
+	results := searchCSV(records)
+	printResults(results)
+}
 
-	// skip first line (header)
-	if _, err := r.Read(); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+// runIndexMode handles index build or search.
+func runIndexMode() {
+	if config.BuildIndex {
+		fmt.Printf("Building index from: %s\n", config.CSVPath)
+		fmt.Printf("Workers: %d\n", config.Workers)
+
+		index, err := BuildIndex(config.CSVPath, config.Workers)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error building index: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Index built: %d records\n", index.TotalRecords)
+
+		if err := index.Save(config.IndexPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving index: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Index saved to: %s\n", config.IndexPath)
+		return
 	}
 
-	return r, nil
+	// Search mode
+	fmt.Printf("Loading index from: %s\n", config.IndexPath)
+	index, err := LoadIndex(config.IndexPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading index: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Index loaded: %d records\n", index.TotalRecords)
+
+	results := searchIndex(index)
+	printResults(results)
+}
+
+// searchIndex searches using the in-memory index.
+func searchIndex(idx *Index) []Record {
+	if config.DNI != "" {
+		pattern := config.DNIPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		return idx.SearchByDNIWithPattern(config.DNI, pattern)
+	}
+
+	if config.PrimerNombre != "" {
+		pattern := config.PrimerNombrePattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		return idx.SearchByFieldWithPattern("primerNombre", config.PrimerNombre, pattern)
+	}
+
+	if config.SegundoNombre != "" {
+		pattern := config.SegundoNombrePattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		return idx.SearchByFieldWithPattern("segundoNombre", config.SegundoNombre, pattern)
+	}
+
+	if config.PrimerApellido != "" {
+		pattern := config.PrimerApellidoPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		return idx.SearchByFieldWithPattern("primerApellido", config.PrimerApellido, pattern)
+	}
+
+	if config.SegundoApellido != "" {
+		pattern := config.SegundoApellidoPattern
+		if pattern == "" {
+			pattern = PatternExact
+		}
+		return idx.SearchByFieldWithPattern("segundoApellido", config.SegundoApellido, pattern)
+	}
+
+	return nil
+}
+
+// parseSearchFlag parses a flag value with pattern suffix like "value:contains" or "value:startswith".
+// Returns the value and the pattern.
+func parseSearchFlag(flagVal string) (value string, pattern SearchPattern) {
+	if flagVal == "" {
+		return "", ""
+	}
+
+	// Check for pattern suffix: "value:pattern"
+	if idx := strings.LastIndex(flagVal, ":"); idx > 0 {
+		prefix := flagVal[:idx]
+		suffix := flagVal[idx+1:]
+
+		// Check if suffix is a valid pattern
+		switch SearchPattern(suffix) {
+		case PatternExact, PatternContains, PatternStartsWith, PatternRegex:
+			return prefix, SearchPattern(suffix)
+		}
+	}
+
+	return flagVal, PatternExact
+}
+
+// printResults outputs search results.
+func printResults(results []Record) {
+	fmt.Printf("Found %d matches\n", len(results))
+	for _, r := range results {
+		fmt.Printf("%s - %s %s, %s %s\n",
+			r.DNI,
+			r.Primer_Nombre,
+			r.Segundo_Nombre,
+			r.Primer_Apellido,
+			r.Segundo_Apellido,
+		)
+	}
 }
