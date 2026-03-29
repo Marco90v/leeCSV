@@ -34,6 +34,7 @@ type Config struct {
 	BuildDB    bool
 	Workers    int
 	Logic      SearchLogic
+	UseFTS     *bool // nil=auto, true=force FTS5, false=disable FTS5
 
 	// Search parameters
 	DNI                    string

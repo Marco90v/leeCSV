@@ -55,7 +55,9 @@ func init() {
 
 	dbSearchCmd.Flags().StringVar(&cfg.DBPath, "db", DefaultDBPath, "Path to SQLite database")
 	dbSearchCmd.Flags().StringVar(&cfg.DNI, "dni", "", "Search by DNI")
+	dbSearchCmd.Flags().StringVar((*string)(&cfg.DNIPattern), "dni-pattern", "exact", "DNI pattern: exact, contains, startswith")
 	dbSearchCmd.Flags().StringVar(&cfg.PrimerNombre, "primer-nombre", "", "Search by first name")
+	dbSearchCmd.Flags().StringVar((*string)(&cfg.PrimerNombrePattern), "primer-nombre-pattern", "exact", "First name pattern: exact, contains, startswith")
 	dbSearchCmd.Flags().StringVar(&cfg.SegundoNombre, "segundo-nombre", "", "Search by second name")
 	dbSearchCmd.Flags().StringVar(&cfg.PrimerApellido, "primer-apellido", "", "Search by first last name")
 	dbSearchCmd.Flags().StringVar(&cfg.SegundoApellido, "segundo-apellido", "", "Search by second last name")
