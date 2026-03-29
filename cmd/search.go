@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -13,9 +14,9 @@ import (
 var searchCmd = &cobra.Command{
 	Use:   "search",
 	Short: "Search records in CSV file",
-	Long: `Search records using direct CSV reading.
-This mode loads all records into memory and searches sequentially.
-Use for small to medium files (< 1M records).`,
+	Long: `Search records using direct CSV reading with parallel processing.
+This mode processes the file in chunks using multiple workers.
+Does NOT load all records into memory - ideal for large files (30M+ records).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runSearch()
 	},
@@ -35,17 +36,16 @@ func init() {
 func runSearch() {
 	params := getSearchParams()
 
-	fmt.Printf("CSV mode - searching in: %s\n", params.CSVPath)
+	fmt.Printf("CSV mode (streaming) - searching in: %s\n", params.CSVPath)
+	fmt.Printf("Workers: %d\n", params.Workers)
 
 	// Check file exists
 	if _, err := os.Stat(params.CSVPath); os.IsNotExist(err) {
 		exitWithError(fmt.Sprintf("CSV file not found: %s", params.CSVPath), nil)
 	}
 
-	records, err := internal.ReadFile(params.CSVPath)
-	if err != nil {
-		exitWithError("Error reading CSV", err)
-	}
+	// Create context for cancellation support
+	ctx := context.Background()
 
 	internalParams := internal.SearchParams{
 		DNI:             params.DNI,
@@ -55,6 +55,20 @@ func runSearch() {
 		SegundoApellido: params.SegundoApellido,
 		Workers:         params.Workers,
 	}
-	results := internal.SearchCSV(records, internalParams)
+
+	// Use streaming search - doesn't load all records into memory
+	results, stats, err := internal.SearchCSVStreaming(ctx, params.CSVPath, internalParams)
+	if err != nil {
+		exitWithError("Error searching CSV", err)
+	}
+
+	// Print stats
+	fmt.Printf("\n--- Search Stats ---\n")
+	fmt.Printf("Records processed: %d\n", stats.TotalProcessed)
+	fmt.Printf("Matches found:    %d\n", stats.TotalMatches)
+	fmt.Printf("Workers used:     %d\n", stats.WorkersUsed)
+	fmt.Printf("--------------------\n")
+
+	// Print results
 	printResults(results)
 }

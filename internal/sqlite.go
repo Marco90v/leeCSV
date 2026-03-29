@@ -31,6 +31,21 @@ func NewSQLiteManager(dbPath string) (*SQLiteManager, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// Enable WAL mode for better concurrent performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("enable WAL mode: %w", err)
+	}
+
+	// Set busy timeout
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", BusyTimeoutMs)); err != nil {
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+
+	// Optimize for bulk inserts
+	if _, err := db.Exec("PRAGMA synchronous=OFF"); err != nil {
+		return nil, fmt.Errorf("set synchronous: %w", err)
+	}
+
 	return &SQLiteManager{
 		dbPath: dbPath,
 		db:     db,
@@ -47,10 +62,6 @@ func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, wor
 	if err := sm.createTables(); err != nil {
 		return fmt.Errorf("create tables: %w", err)
 	}
-
-	// Enable WAL mode
-	_, _ = sm.db.Exec("PRAGMA journal_mode=WAL")
-	_, _ = sm.db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", BusyTimeoutMs))
 
 	file, err := os.Open(csvPath)
 	if err != nil {
@@ -76,13 +87,14 @@ func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, wor
 	}
 	defer stmt.Close()
 
-	// Batch processing
-	batchSize := DefaultBatchSize
+	// Batch processing - increase batch size for better performance
+	batchSize := DefaultBatchSize * 10 // 10,000 records per batch
 	if workers > 0 {
-		batchSize = workers * WorkersBatchFactor
+		batchSize = workers * WorkersBatchFactor * 10
 	}
 	batch := make([][]string, 0, batchSize)
 
+	recordCount := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -108,18 +120,32 @@ func (sm *SQLiteManager) BuildDBFromCSV(ctx context.Context, csvPath string, wor
 		}
 
 		batch = append(batch, record)
+		recordCount++
 
 		if len(batch) >= batchSize {
 			if err := sm.flushBatch(stmt, batch); err != nil {
 				return err
 			}
 			batch = batch[:0]
+
+			// Log progress every 100k records
+			if recordCount%100000 == 0 {
+				fmt.Printf("Imported %d records...\n", recordCount)
+			}
 		}
 	}
 
-	// Build FTS index (optional)
-	_ = sm.buildFTSIndex()
+	// Build FTS index for full-text search
+	if err := sm.buildFTSIndex(); err != nil {
+		fmt.Printf("Warning: FTS index build failed: %v\n", err)
+	}
 
+	// Run ANALYZE for query optimization
+	if _, err := sm.db.Exec("ANALYZE"); err != nil {
+		fmt.Printf("Warning: ANALYZE failed: %v\n", err)
+	}
+
+	fmt.Printf("Import complete: %d records\n", recordCount)
 	return nil
 }
 
@@ -170,20 +196,88 @@ func (sm *SQLiteManager) createTables() error {
 		return fmt.Errorf("create DNI index: %w", err)
 	}
 
-	// FTS5 table (optional)
-	_, _ = sm.db.Exec(`
+	// Create indexes on name fields for faster lookups
+	_, _ = sm.db.Exec(`CREATE INDEX IF NOT EXISTS idx_primer_nombre ON records(primer_nombre)`)
+	_, _ = sm.db.Exec(`CREATE INDEX IF NOT EXISTS idx_primer_apellido ON records(primer_apellido)`)
+
+	// Try to create FTS5 virtual table for full-text search
+	// Note: FTS5 may not be available in all SQLite builds
+	if err := sm.createFTSTable(); err != nil {
+		fmt.Printf("Note: FTS5 not available - full-text search will use LIKE queries\n")
+	}
+
+	return nil
+}
+
+// createFTSTable attempts to create FTS5 table and triggers.
+// Returns nil if FTS5 is not available (graceful degradation).
+func (sm *SQLiteManager) createFTSTable() error {
+	// Create FTS5 virtual table for full-text search
+	_, err := sm.db.Exec(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
-			dni, primer_nombre, segundo_nombre, primer_apellido, segundo_apellido,
-			content='records', content_rowid='id'
+			dni,
+			primer_nombre,
+			segundo_nombre,
+			primer_apellido,
+			segundo_apellido,
+			content='records',
+			content_rowid='id'
 		)
 	`)
+	if err != nil {
+		return fmt.Errorf("FTS5 not available: %w", err)
+	}
+
+	// Create triggers to keep FTS index synchronized
+	// Insert trigger
+	_, err = sm.db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
+			INSERT INTO records_fts(rowid, dni, primer_nombre, segundo_nombre, primer_apellido, segundo_apellido)
+			VALUES (new.id, new.dni, new.primer_nombre, new.segundo_nombre, new.primer_apellido, new.segundo_apellido);
+		END
+	`)
+	if err != nil {
+		return fmt.Errorf("create insert trigger: %w", err)
+	}
+
+	// Delete trigger
+	_, err = sm.db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS records_ad AFTER DELETE ON records BEGIN
+			INSERT INTO records_fts(records_fts, rowid, dni, primer_nombre, segundo_nombre, primer_apellido, segundo_apellido)
+			VALUES('delete', old.id, old.dni, old.primer_nombre, old.segundo_nombre, old.primer_apellido, old.segundo_apellido);
+		END
+	`)
+	if err != nil {
+		return fmt.Errorf("create delete trigger: %w", err)
+	}
+
+	// Update trigger
+	_, err = sm.db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS records_au AFTER UPDATE ON records BEGIN
+			INSERT INTO records_fts(records_fts, rowid, dni, primer_nombre, segundo_nombre, primer_apellido, segundo_apellido)
+			VALUES('delete', old.id, old.dni, old.primer_nombre, old.segundo_nombre, old.primer_apellido, old.segundo_apellido);
+			INSERT INTO records_fts(rowid, dni, primer_nombre, segundo_nombre, primer_apellido, segundo_apellido)
+			VALUES (new.id, new.dni, new.primer_nombre, new.segundo_nombre, new.primer_apellido, new.segundo_apellido);
+		END
+	`)
+	if err != nil {
+		return fmt.Errorf("create update trigger: %w", err)
+	}
 
 	return nil
 }
 
 // buildFTSIndex builds the FTS5 index.
+// Returns nil if FTS5 is not available (graceful degradation).
 func (sm *SQLiteManager) buildFTSIndex() error {
-	_, err := sm.db.Exec(`INSERT INTO records_fts(records_fts) VALUES('rebuild')`)
+	// Check if FTS table exists
+	var count int
+	err := sm.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records_fts'").Scan(&count)
+	if err != nil || count == 0 {
+		return fmt.Errorf("FTS5 table not available")
+	}
+
+	_, err = sm.db.Exec(`INSERT INTO records_fts(records_fts) VALUES('rebuild')`)
 	if err != nil {
 		return fmt.Errorf("rebuild FTS: %w", err)
 	}
